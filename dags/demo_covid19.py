@@ -1,6 +1,9 @@
 
 from datetime import timedelta
+from datetime import datetime
 from textwrap import dedent
+import tempfile as tf
+import os
 
 # The DAG object; we'll need this to instantiate a DAG
 from airflow import DAG
@@ -11,11 +14,11 @@ from airflow.operators.python import PythonOperator, PythonVirtualenvOperator
 from airflow.utils.dates import days_ago
 
 import pandas as pd
-import tempfile as tf
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
-import os
 from sqlalchemy import create_engine
 import psycopg2
+
 
 # These args will get passed on to each operator
 # You can override them on a per-task basis during operator initialization
@@ -145,6 +148,17 @@ with DAG(
         scaled_df.to_sql('scoring_report', engine,if_exists='replace',index=False)
         print('csv file imported')
 
+    def generate_plot(**kwargs):
+        Selec_Columns=['Confirmed','Deaths', 'Recovered', 'Active', 'Incident_Rate','Case_Fatality_Ratio']
+        ti = kwargs['ti']
+        csv_path = ti.xcom_pull(task_ids='scale_dataframe')
+        print(f'read csv {csv_path} to database')
+        scaled_df = pd.read_csv(csv_path)
+        print('csv file imported')
+        scaled_df[Selec_Columns].plot(figsize=(20,10))
+        img_name = datetime.now().strftime("%y%m%d %H%M%S")
+        plt.savefig(f'/opt/airflow/output/{img_name}.png')
+
     t1 = PythonOperator(
         task_id='prepare_days_to_fetch',
         python_callable=prepare_days_to_fetch)
@@ -172,5 +186,10 @@ with DAG(
         python_callable=clean_up
     )
 
+    t7 = PythonOperator(
+        task_id = "generate_plot",
+        python_callable=generate_plot
+    )
 
-t1>>t2>>t3>>t4>>t5>>t6
+
+t1>>t2>>t3>>t4>>[t5,t7]>>t6

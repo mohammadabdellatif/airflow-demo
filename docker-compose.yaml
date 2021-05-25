@@ -54,7 +54,8 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
     AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
   volumes:
-    - ./volumes/dags:/opt/airflow/dags
+    - ./dags:/opt/airflow/dags
+    - ./volumes/reports:/opt/airflow/output
     - ./volumes/logs:/opt/airflow/logs
     - ./volumes/plugins:/opt/airflow/plugins
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
