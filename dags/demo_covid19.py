@@ -13,6 +13,9 @@ from airflow.utils.dates import days_ago
 import pandas as pd
 import tempfile as tf
 from sklearn.preprocessing import MinMaxScaler
+import os
+from sqlalchemy import create_engine
+import psycopg2
 
 # These args will get passed on to each operator
 # You can override them on a per-task basis during operator initialization
@@ -68,6 +71,13 @@ with DAG(
             pass
         return DF_i
 
+    def save_dataframe_to_temp(df):
+        td = tf.mkdtemp()
+        csv_path = f'{td}/data.csv'
+        df.to_csv(csv_path)
+        print(f'csv data saved to {csv_path}')
+        return csv_path
+
     def prepare_dataframes(**kwargs):
         print('start to fetch datasets')
         ti = kwargs['ti']
@@ -84,12 +94,8 @@ with DAG(
         df['Day']=pd.to_datetime(df.Day, infer_datetime_format=True)
 
         df['Case_Fatality_Ratio']=df['Case_Fatality_Ratio'].astype(float)
-        td = tf.mkdtemp()
-        csv_path = f'{td}/data.csv'
-        df.to_csv(csv_path)
-        print(f'csv data saved to {csv_path}')
-        return csv_path
-        
+        return save_dataframe_to_temp(df)
+
     def scale_dataframe(**kwargs):
         ti = kwargs['ti']
         csv_path = ti.xcom_pull(task_ids='prepare_dataframes')
@@ -108,10 +114,36 @@ with DAG(
         min_max_scaler = MinMaxScaler()
 
         scaled_df = pd.DataFrame(min_max_scaler.fit_transform(train[Selec_Columns]),columns=Selec_Columns)
-        scaled_df.index=scaled_df.index
-        scaled_df['Day']=scaled_df.Day
-        print(scaled_df.take(3))
+        scaled_df.index=df.index
+        scaled_df['Day']=df['Day']
+        print(scaled_df.head(3))
+        return save_dataframe_to_temp(scaled_df)
 
+
+    def clean_up(**kwargs):
+         ti = kwargs['ti']
+         csv_path = ti.xcom_pull(task_ids='prepare_dataframes')
+         print(f'cleanup {csv_path}')
+         os.remove(csv_path)
+         csv_path = ti.xcom_pull(task_ids='scale_dataframe')
+         print(f'cleanup {csv_path}')
+         os.remove(csv_path)
+         print('cleanup completed')
+
+    def store_to_db(**kwargs):
+        host="postgres" # use "localhost" if you access from outside the localnet docker-compose env
+        database="airflow"
+        user="airflow"
+        password="airflow"
+        port='5432'
+        engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{database}')
+
+        ti = kwargs['ti']
+        csv_path = ti.xcom_pull(task_ids='scale_dataframe')
+        print(f'read csv {csv_path} to database')
+        scaled_df = pd.read_csv(csv_path)
+        scaled_df.to_sql('scoring_report', engine,if_exists='replace',index=False)
+        print('csv file imported')
 
     t1 = PythonOperator(
         task_id='prepare_days_to_fetch',
@@ -130,4 +162,15 @@ with DAG(
         python_callable=scale_dataframe
     )
 
-t1>>t2>>t3 >> t4
+    t5 = PythonOperator(
+        task_id = "store_to_db",
+        python_callable = store_to_db
+    )
+
+    t6 = PythonOperator(
+        task_id="clean_up",
+        python_callable=clean_up
+    )
+
+
+t1>>t2>>t3>>t4>>t5>>t6
