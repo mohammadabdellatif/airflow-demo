@@ -66,6 +66,18 @@ x-airflow-common:
       condition: service_healthy
 
 services:
+  pgAdmin:
+    restart: always
+    build:
+      context: ./pgadmin
+      dockerfile: ./Dockerfile
+    image: demo/pgadmin4
+    container_name: "demo-pgadmin"
+    ports:
+      - "8000:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: 1234@admin.com
+      PGADMIN_DEFAULT_PASSWORD: 1234
   postgres:
     build:
       context: ./postgres

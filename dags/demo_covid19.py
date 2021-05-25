@@ -12,13 +12,14 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator, PythonVirtualenvOperator
 from airflow.utils.dates import days_ago
+from airflow.models import Variable
 
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from sqlalchemy import create_engine
 import psycopg2
-
+import shutil
 
 # These args will get passed on to each operator
 # You can override them on a per-task basis during operator initialization
@@ -40,32 +41,24 @@ with DAG(
 ) as dag:
 
     def prepare_days_to_fetch():
+        from_date = Variable.get("from_date", default_var='9/1/2020')
+        to_date = Variable.get("to_date", default_var='5/30/2021')
+        print(f'Fetch data from {from_date} to {to_date}')
+        dr = pd.date_range(start=from_date, end=to_date)
         List_of_days=[]
-        for year in range(2021,2022):
-          for month in range(1,3):
-            for day in range(1,32):
-              month=int(month)
-              if day <=9:
-                day=f'0{day}'
-
-              if month <= 9 :
-                month=f'0{month}'
-              List_of_days.append(f'{month}-{day}-{year}')
+        for d in dr:
+            List_of_days.append(d.strftime('%m-%d-%Y'))
         return List_of_days
-
-    def print_dates(**kwargs):
-        ti = kwargs['ti']
-        dates = ti.xcom_pull(task_ids='prepare_days_to_fetch')
-        for d in dates:
-            print(d)
 
     def get_df_by_date(Day):
         DF_i=None
+        country = Variable.get("country", default_var = 'United Kingdom')
+        province_state = Variable.get("province_state", default_var = 'England')
         try:
             URL_Day=f'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/{Day}.csv'
             DF_day=pd.read_csv(URL_Day)
             DF_day['Day']=Day
-            cond=(DF_day.Country_Region=='India')&(DF_day.Province_State=='Delhi')
+            cond=(DF_day.Country_Region==country)&(DF_day.Province_State==province_state)
             Selec_columns=['Day','Country_Region', 'Last_Update',
                   'Lat', 'Long_', 'Confirmed', 'Deaths', 'Recovered', 'Active',
                   'Combined_Key', 'Incident_Rate', 'Case_Fatality_Ratio']
@@ -86,9 +79,13 @@ with DAG(
         ti = kwargs['ti']
         dates = ti.xcom_pull(task_ids='prepare_days_to_fetch')
         DF_all=[]
+        count = len(dates)
         for d in dates:
+            print(f'fetch dataset for {d}')
             df = get_df_by_date(d)
             DF_all.append(df)
+            count = count - 1
+            print(f'{count} is remaining')
         l = len(DF_all)
         print(f'total dataframes retrieved {l}')
         df=pd.concat(DF_all).reset_index(drop=True)
@@ -148,6 +145,14 @@ with DAG(
         scaled_df.to_sql('scoring_report', engine,if_exists='replace',index=False)
         print('csv file imported')
 
+    def save_scaled_to_csv(**kwargs):
+        ti = kwargs['ti']
+        csv_path = ti.xcom_pull(task_ids='scale_dataframe')
+        name = datetime.now().strftime("%y%m%d%H%M%S")
+        target = f'/opt/airflow/output/uk_scoring_report_{name}.csv'
+
+        shutil.copyfile(csv_path, target)
+
     def generate_plot(**kwargs):
         Selec_Columns=['Confirmed','Deaths', 'Recovered', 'Active', 'Incident_Rate','Case_Fatality_Ratio']
         ti = kwargs['ti']
@@ -156,16 +161,12 @@ with DAG(
         scaled_df = pd.read_csv(csv_path)
         print('csv file imported')
         scaled_df[Selec_Columns].plot(figsize=(20,10))
-        img_name = datetime.now().strftime("%y%m%d %H%M%S")
-        plt.savefig(f'/opt/airflow/output/{img_name}.png')
+        img_name = datetime.now().strftime("%y%m%d%H%M%S")
+        plt.savefig(f'/opt/airflow/output/uk_scoring_report_{img_name}.png')
 
     t1 = PythonOperator(
         task_id='prepare_days_to_fetch',
         python_callable=prepare_days_to_fetch)
-
-    t2 = PythonOperator(
-        task_id='print_dates',
-        python_callable=print_dates)
 
     t3 = PythonOperator(
         task_id='prepare_dataframes',
@@ -191,5 +192,10 @@ with DAG(
         python_callable=generate_plot
     )
 
+    t8 = PythonOperator(
+        task_id = "save_scaled_to_csv",
+        python_callable = save_scaled_to_csv
+    )
 
-t1>>t2>>t3>>t4>>[t5,t7]>>t6
+
+t1>>t3>>t4>>[t5,t8,t7]>>t6
